@@ -58,30 +58,6 @@ public class MongoOutputCommitter extends OutputCommitter {
         this();
     }
 
-    /**
-     * Get the Path to where temporary files should be stored for a
-     * TaskAttempt, whose TaskAttemptContext is provided.
-     *
-     * @param context the TaskAttemptContext.
-     * @return the Path to the temporary file for the TaskAttempt.
-     */
-    public static Path getTaskAttemptPath(final TaskAttemptContext context) {
-        Configuration config = context.getConfiguration();
-        // Try to use the following base temporary directories, in this order:
-        // 1. New-style option for task tmp dir
-        // 2. Old-style option for task tmp dir
-        // 3. Hadoop system-wide tmp dir
-        // 4. /tmp
-        String basePath = config.get(
-            "mapreduce.task.tmp.dir",
-            config.get(
-                "mapred.child.tmp",
-                config.get("hadoop.tmp.dir", "/tmp")));
-        // Hadoop Paths always use "/" as a directory separator.
-        return new Path(
-            String.format("%s/%s/%s/_out",
-                          basePath, context.getTaskAttemptID().toString(), TEMP_DIR_NAME));
-    }
 
     @Override
     public void setupJob(final JobContext jobContext) {
@@ -224,20 +200,63 @@ public class MongoOutputCommitter extends OutputCommitter {
 
     private void cleanupResources(final TaskAttemptContext taskContext)
         throws IOException {
-        Path tempPath = getTaskAttemptPath(taskContext);
-        try {
-            FileSystem fs = FileSystem.get(taskContext.getConfiguration());
-            fs.delete(tempPath, true);
-        } catch (IOException e) {
-            LOG.error("Could not delete temporary file " + tempPath, e);
-            throw e;
+
+        Path currentPath = getTaskAttemptPath(taskContext);
+        Path tempDirectory = getTempDirectory(taskContext.getConfiguration());
+
+        for(FileSystem fs = FileSystem.get(taskContext.getConfiguration()); 
+            !currentPath.equals(tempDirectory); currentPath = currentPath.getParent()) {
+            try {
+                fs.delete(currentPath, true);
+            } catch (IOException e) {
+                LOG.error("Could not delete temporary file: " + currentPath, e);
+                throw e;
+            }
         }
+
+
         if (collections != null) {
             for (DBCollection collection : collections) {
                 MongoConfigUtil.close(collection.getDB().getMongo());
             }
         }
     }
+
+    /**
+     * Get the Path to where temporary files should be stored for a
+     * TaskAttempt, whose TaskAttemptContext is provided.
+     *
+     * @param context the TaskAttemptContext.
+     * @return the Path to the temporary file for the TaskAttempt.
+     */
+    public static Path getTaskAttemptPath(final TaskAttemptContext context) {
+        Configuration config = context.getConfiguration();
+        // Try to use the following base temporary directories, in this order:
+        // 1. New-style option for task tmp dir
+        // 2. Old-style option for task tmp dir
+        // 3. Hadoop system-wide tmp dir
+        // 4. /tmp
+        String basePath = config.get(
+            "mapreduce.task.tmp.dir",
+            config.get(
+                "mapred.child.tmp",
+                config.get("hadoop.tmp.dir", "/tmp")));
+        // Hadoop Paths always use "/" as a directory separator.
+        return new Path(
+            String.format("%s/%s/%s/_out",
+                          basePath, context.getTaskAttemptID().toString(), TEMP_DIR_NAME));
+    }
+
+    private static Path getTempDirectory(Configuration config) {
+        String basePath = config.get("mapreduce.task.tmp.dir", config.get("mapred.child.tmp", config.get("hadoop.tmp.dir", "/tmp")));
+        return new Path(basePath);
+    }
+
+    // public static Path getTaskAttemptPath(com.mongodb.hadoop.util.CompatUtils.TaskAttemptContext context) {
+    //     Configuration config = context.getConfiguration();
+    //     return new Path(String.format("%s/%s/%s/_out", new Object[]{getTempDirectory(config), context.getTaskAttemptID().toString(), "_MONGO_OUT_TEMP"}));
+    // }
+    
 
     private DBCollection getDbCollectionByRoundRobin() {
         int hostIndex = (roundRobinCounter++ & 0x7FFFFFFF) % numberOfHosts;
